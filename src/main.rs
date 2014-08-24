@@ -1,8 +1,7 @@
 #![experimental]
 
 use std::comm::Messages;
-use std::io::IoResult;
-use std::io::TcpStream;
+use std::io::{BufferedWriter, IoResult, TcpStream};
 use std::os;
 use std::sync::Future;
 
@@ -85,7 +84,7 @@ fn read_loop(mut _stream: TcpStream, sender: Sender<Vec<u8>>) -> proc():Send -> 
 }
 
 pub struct Connection {
-    stream: TcpStream,
+    stream_writer: BufferedWriter<TcpStream>,
     receiver: Receiver<Vec<u8>>,
     future: Future<IoResult<()>>,
 }
@@ -95,12 +94,43 @@ impl Connection {
         let stream = try!(TcpStream::connect(host, port));
         let (tx, rx) = channel();
         let future = Future::spawn(read_loop(stream.clone(), tx));
+        let stream_writer = BufferedWriter::new(stream);
 
         Ok(Connection {
-            stream: stream,
+            stream_writer: stream_writer,
             receiver: rx,
             future: future,
         })
+    }
+
+    pub fn send(&mut self, prefix: Option<&[u8]>, command: &[u8],
+                params: &[&[u8]]) -> IoResult<()> {
+        match prefix {
+            Some(p) => {
+                try!(self.stream_writer.write(p));
+                try!(self.stream_writer.write(b" "));
+            }
+            None => (),
+        }
+
+        try!(self.stream_writer.write(command));
+
+        for param in params.init().iter() {
+            try!(self.stream_writer.write(b" "));
+            try!(self.stream_writer.write(*param));
+        }
+
+        match params.last() {
+            Some(p) => {
+                try!(self.stream_writer.write(b" :"));
+                try!(self.stream_writer.write(*p));
+            }
+            None => (),
+        }
+
+        try!(self.stream_writer.write(b"\r\n"));
+
+        self.stream_writer.flush()
     }
 
     pub fn iter<'a>(&'a self) -> Messages<'a, Vec<u8>> {
@@ -111,11 +141,15 @@ impl Connection {
 fn main() {
     let args = os::args();
 
-    if args.len() != 2 {
+    if args.len() != 3 {
         return;
     }
 
+    let name = args[2].as_bytes();
     let mut connection = Connection::connect(args[1].as_slice(), 6667).unwrap();
+
+    connection.send(None, b"NICK", [name]);
+    connection.send(None, b"USER", [name, b"0", b"*", name]);
 
     for msg in connection.iter() {
         print!("{}", String::from_utf8_lossy(msg.as_slice()));
