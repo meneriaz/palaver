@@ -1,3 +1,6 @@
+// TODO: Document module.
+// TODO: Create a `Message` type and send `Result<Message, Vec<u8>>` instead of `Vec<u8>`.
+
 #![experimental]
 
 use std::comm::Messages;
@@ -38,7 +41,6 @@ fn send_messages(mut unsent: Vec<u8>, buffer: &[u8], sender: &Sender<Vec<u8>>) -
     unsent
 }
 
-// TODO: Create a `Message` type and send `Result<Message, Vec<u8>>` instead of `Vec<u8>`.
 /// Returns a proc that continually read from the given stream and sends CRLF delimited messages
 /// from the stream on the given channel.
 ///
@@ -82,6 +84,7 @@ fn read_loop(mut _stream: TcpStream, sender: Sender<Vec<u8>>) -> proc():Send -> 
     }
 }
 
+/// A wrapper around a TCP connection to some server.
 pub struct Connection {
     stream_writer: BufferedWriter<TcpStream>,
     receiver: Receiver<Vec<u8>>,
@@ -89,6 +92,12 @@ pub struct Connection {
 }
 
 impl Connection {
+    /// Connect to the given server and start reading messages from it.
+    ///
+    /// # Errors
+    ///
+    /// If an error happens while attempting to connect to the server, the error is returned as
+    /// `Err`.
     pub fn connect(host: &str, port: u16) -> IoResult<Connection> {
         let stream = try!(TcpStream::connect(host, port));
         let (tx, rx) = channel();
@@ -102,6 +111,7 @@ impl Connection {
         })
     }
 
+    /// Helper function to send IRC messages on the connection.
     pub fn send(&mut self, prefix: Option<&[u8]>, command: &[u8],
                 params: &[&[u8]]) -> IoResult<()> {
         match prefix {
@@ -132,6 +142,8 @@ impl Connection {
         self.stream_writer.flush()
     }
 
+    /// Returns an iterator that will block waiting for messages. It will return `None` when the
+    /// connection to the server has been lost.
     pub fn iter<'a>(&'a self) -> Messages<'a, Vec<u8>> {
         self.receiver.iter()
     }
