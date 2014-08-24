@@ -1,5 +1,6 @@
 #![experimental]
 
+use std::comm::Messages;
 use std::io::IoResult;
 use std::io::TcpStream;
 use std::os;
@@ -83,6 +84,30 @@ fn read_loop(mut _stream: TcpStream, sender: Sender<Vec<u8>>) -> proc():Send -> 
     }
 }
 
+pub struct Connection {
+    stream: TcpStream,
+    receiver: Receiver<Vec<u8>>,
+    future: Future<IoResult<()>>,
+}
+
+impl Connection {
+    pub fn connect(host: &str, port: u16) -> IoResult<Connection> {
+        let stream = try!(TcpStream::connect(host, port));
+        let (tx, rx) = channel();
+        let future = Future::spawn(read_loop(stream.clone(), tx));
+
+        Ok(Connection {
+            stream: stream,
+            receiver: rx,
+            future: future,
+        })
+    }
+
+    pub fn iter<'a>(&'a self) -> Messages<'a, Vec<u8>> {
+        self.receiver.iter()
+    }
+}
+
 fn main() {
     let args = os::args();
 
@@ -90,12 +115,9 @@ fn main() {
         return;
     }
 
-    let stream = TcpStream::connect(args[1].as_slice(), 6667).unwrap();
-    let (tx, rx) = channel();
+    let mut connection = Connection::connect(args[1].as_slice(), 6667).unwrap();
 
-    Future::spawn(read_loop(stream, tx));
-
-    for msg in rx.iter() {
+    for msg in connection.receiver.iter() {
         print!("{}", String::from_utf8_lossy(msg.as_slice()));
     }
 }
