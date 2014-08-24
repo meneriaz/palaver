@@ -117,7 +117,7 @@ fn main() {
 
     let mut connection = Connection::connect(args[1].as_slice(), 6667).unwrap();
 
-    for msg in connection.receiver.iter() {
+    for msg in connection.iter() {
         print!("{}", String::from_utf8_lossy(msg.as_slice()));
     }
 }
