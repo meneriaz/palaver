@@ -2,7 +2,7 @@
 
 use std::os;
 
-use connection::Connection;
+use connection::{Connection, send, close_stream};
 
 mod connection;
 
@@ -14,12 +14,29 @@ fn main() {
     }
 
     let name = args[2].as_bytes();
-    let mut connection = Connection::connect(args[1].as_slice(), 6667).unwrap();
 
-    connection.send(None, b"NICK", [name]);
-    connection.send(None, b"USER", [name, b"0", b"*", name]);
+    let Connection(rx, mut sw, mut ft) = Connection::connect(args[1].as_slice(), 6667).unwrap();
 
-    for msg in connection.iter() {
-        print!("{}", String::from_utf8_lossy(msg.as_slice()));
+    send(&mut sw, None, b"NICK", [name]);
+    send(&mut sw, None, b"USER", [name, b"0", b"*", name]);
+
+    loop {
+        select! {
+            msg = rx.recv_opt() => {
+                match msg {
+                    Ok(m) => print!("{}", String::from_utf8_lossy(m.as_slice())),
+                    Err(e) => { println!("Error: {}", e); break; }
+                }
+            }
+        }
     }
+
+    close_stream(sw);
+
+    match ft.get() {
+        Err(e) => println!("Error: {}", e),
+        _ => (),
+    }
+
+    println!("END");
 }

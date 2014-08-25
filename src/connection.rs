@@ -1,150 +1,67 @@
-// TODO: Document module.
-// TODO: Create a `Message` type and send `Result<Message, Vec<u8>>` instead of `Vec<u8>`.
-
 #![experimental]
 
-use std::comm::Messages;
-use std::io::{BufferedWriter, IoResult, TcpStream};
+use std::io::{BufferedReader, BufferedWriter};
+use std::io::{IoResult, TcpStream};
 use std::sync::Future;
 
-/// Sends as many messages as possible from the given data and returns any unsent data.
-///
-/// Attempts to complete any given partial message before sending the remaining messages from the
-/// buffer.
-fn send_messages(mut unsent: Vec<u8>, buffer: &[u8], sender: &Sender<Vec<u8>>) -> Vec<u8> {
-    let mut was_cr = false;
-    let mut start = 0;
-    let mut end = 0;
-    for (pos, byte) in buffer.iter().enumerate() {
-        end = pos + 1;
-        match *byte {
-            b'\r' => was_cr = true,
-            b'\n' => if was_cr {
-                if unsent.is_empty() {
-                    sender.send(Vec::from_slice(buffer.slice(start, end)));
-                } else {
-                    sender.send(unsent.clone().append(buffer.slice(start, end)));
-                    unsent.clear();
-                }
-
-                start = end;
-                was_cr = false;
-            },
-            _ => was_cr = false,
-        }
-    }
-
-    if start != end {
-        unsent.push_all(buffer.slice(start, end));
-    };
-
-    unsent
-}
-
-/// Returns a proc that continually read from the given stream and sends CRLF delimited messages
-/// from the stream on the given channel.
-///
-/// The proc will return an `IoResult<()>` when the stream is no longer readable for any reason.
-/// If an `IoError` occured while reading from the stream it will be returned, and if zero bytes
-/// are read from the stream `Ok(())` will be returned. If the stream stops being readable in
-/// the middle of a message the partial message will be sent on the channel before the proc
-/// returns.
-///
-/// Messages sent on the channel will all (with the possible exception of the last one, see above)
-/// end with b"\r\n", but there is no other guarantee that they will follow the IRC specification.
-///
-/// If the channel's reciever is closed the proc will `fail!`.
-fn read_loop(mut _stream: TcpStream, sender: Sender<Vec<u8>>) -> proc():Send -> IoResult<()> {
-    proc() {
-        // FIXME: The buffer size is based on max message size, can this be improved?
-        let mut buffer = [0u8, ..512];
-        let mut unsent = Vec::new();
-        let mut ret: IoResult<()>;
-        loop {
-            let bytes_read = match _stream.read(buffer) {
-                Ok(0) => {
-                    ret = Ok(());
-                    break;
-                },
-                Err(e) => {
-                    ret = Err(e);
-                    break;
-                },
-                Ok(i) => i,
-            };
-
-            unsent = send_messages(unsent, buffer.slice_to(bytes_read), &sender);
-        }
-
-        if !unsent.is_empty() {
-            sender.send(unsent);
-        }
-
-        ret
-    }
-}
-
-/// A wrapper around a TCP connection to some server.
-pub struct Connection {
-    stream_writer: BufferedWriter<TcpStream>,
-    receiver: Receiver<Vec<u8>>,
-    future: Future<IoResult<()>>,
-}
+pub struct Connection(
+    pub Receiver<Vec<u8>>,
+    pub BufferedWriter<TcpStream>,
+    pub Future<IoResult<()>>
+);
 
 impl Connection {
-    /// Connect to the given server and start reading messages from it.
-    ///
-    /// # Errors
-    ///
-    /// If an error happens while attempting to connect to the server, the error is returned as
-    /// `Err`.
+    // FIXME: Temporary workaround for rust-lang/rust#16671.
+    #[allow(unused_mut)]
     pub fn connect(host: &str, port: u16) -> IoResult<Connection> {
         let stream = try!(TcpStream::connect(host, port));
         let (tx, rx) = channel();
-        let future = Future::spawn(read_loop(stream.clone(), tx));
+
+        let mut reader = BufferedReader::new(stream.clone());
+        let future = Future::spawn(proc() {
+            loop { tx.send(try!(reader.read_until(b'\n'))); }
+        });
+
         let stream_writer = BufferedWriter::new(stream);
 
-        Ok(Connection {
-            stream_writer: stream_writer,
-            receiver: rx,
-            future: future,
-        })
+        Ok(Connection(rx, stream_writer, future))
+    }
+}
+
+pub fn send<T: Writer>(w: &mut T, prefix: Option<&[u8]>, command: &[u8],
+                       params: &[&[u8]]) -> IoResult<()> {
+    match prefix {
+        Some(p) => {
+            try!(w.write(p));
+            try!(w.write(b" "));
+        }
+        None => (),
     }
 
-    /// Helper function to send IRC messages on the connection.
-    pub fn send(&mut self, prefix: Option<&[u8]>, command: &[u8],
-                params: &[&[u8]]) -> IoResult<()> {
-        match prefix {
-            Some(p) => {
-                try!(self.stream_writer.write(p));
-                try!(self.stream_writer.write(b" "));
-            }
-            None => (),
-        }
+    try!(w.write(command));
 
-        try!(self.stream_writer.write(command));
-
-        for param in params.init().iter() {
-            try!(self.stream_writer.write(b" "));
-            try!(self.stream_writer.write(*param));
-        }
-
-        match params.last() {
-            Some(p) => {
-                try!(self.stream_writer.write(b" :"));
-                try!(self.stream_writer.write(*p));
-            }
-            None => (),
-        }
-
-        try!(self.stream_writer.write(b"\r\n"));
-
-        self.stream_writer.flush()
+    for param in params.init().iter() {
+        try!(w.write(b" "));
+        try!(w.write(*param));
     }
 
-    /// Returns an iterator that will block waiting for messages. It will return `None` when the
-    /// connection to the server has been lost.
-    pub fn iter<'a>(&'a self) -> Messages<'a, Vec<u8>> {
-        self.receiver.iter()
+    match params.last() {
+        Some(param) => {
+            try!(w.write(b" :"));
+            try!(w.write(*param));
+        }
+        None => (),
     }
+
+    try!(w.write(b"\r\n"));
+
+    w.flush()
+}
+
+// XXX: The end result will be that the connection is closed.
+#[allow(unused_must_use)]
+pub fn close_stream(w: BufferedWriter<TcpStream>) {
+    let mut stream = w.unwrap();
+    stream.close_read();
+    stream.close_write();
 }
