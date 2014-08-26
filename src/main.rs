@@ -2,7 +2,7 @@
 
 use std::os;
 
-use connection::{Connection, send, close_stream};
+use connection::{connect, close_stream};
 
 mod connection;
 
@@ -15,10 +15,8 @@ fn main() {
 
     let name = args[2].as_bytes();
 
-    let Connection(rx, mut sw, mut ft) = Connection::connect(args[1].as_slice(), 6667).unwrap();
-
-    send(&mut sw, None, b"NICK", [name]);
-    send(&mut sw, None, b"USER", [name, b"0", b"*", name]);
+    let (rx, sw, mut ft) = connect(args[1].as_slice(), 6667,
+                                   name, name, b"0", name).unwrap();
 
     loop {
         select! {
